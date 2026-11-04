@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BatteryScope — 充放电功率实时监控</title>
+<style>
+  :root{
+    --bg:#0d1017; --bg2:#151a23; --bg3:#1c222d; --line:#2a3240;
+    --fg:#e6edf6; --fg2:#9aa7b8; --fg3:#6b7789;
+    --chg:#3ddc84; --dis:#ff6b5b; --net:#4da3ff; --volt:#ffb020; --amp:#b47cff;
+    --ok:#3ddc84; --warn:#ffb020; --err:#ff6b5b;
+    --mono:'Cascadia Mono','JetBrains Mono',Consolas,'SF Mono',Menlo,monospace;
+    --sans:'Segoe UI','Microsoft YaHei',system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:13px;overflow-x:hidden}
+  body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:radial-gradient(1100px 520px at 18% -8%,rgba(61,220,132,.07),transparent 62%),
+               radial-gradient(900px 480px at 92% 4%,rgba(77,163,255,.07),transparent 60%)}
+  .wrap{position:relative;z-index:1;max-width:1500px;margin:0 auto;padding:18px 22px 40px}
+
+  /* ---------- 顶栏 ---------- */
+  header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+    padding:12px 16px;background:var(--bg2);border:1px solid var(--line);border-radius:12px;margin-bottom:16px}
+  .brand{display:flex;align-items:center;gap:11px}
+  .logo{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
+    background:linear-gradient(140deg,var(--chg),#1a9e5c);box-shadow:0 0 16px rgba(61,220,132,.3)}
+  .logo svg{width:19px;height:19px;stroke:#08240f;stroke-width:2.1;fill:none}
+  h1{font-size:15px;font-weight:600;letter-spacing:.2px}
+  .sub{font-size:11px;color:var(--fg3);font-family:var(--mono)}
+  .spacer{flex:1}
+  .statpill{display:flex;flex-direction:column;gap:2px;padding:0 14px;border-left:1px solid var(--line)}
+  .statpill .k{font-size:10px;color:var(--fg3);text-transform:uppercase;letter-spacing:.7px}
+  .statpill .v{font-size:14px;font-weight:600;font-family:var(--mono)}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  .dot.live{background:var(--chg);box-shadow:0 0 0 0 rgba(61,220,132,.6);animation:pulse 1.8s infinite}
+  .dot.dead{background:var(--err)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,132,.55)}70%{box-shadow:0 0 0 8px rgba(61,220,132,0)}100%{box-shadow:0 0 0 0 rgba(61,220,132,0)}}
+  .btn{background:var(--bg3);border:1px solid var(--line);color:var(--fg2);
+    padding:7px 13px;border-radius:8px;font-size:12px;cursor:pointer;font-family:var(--sans);transition:.15s}
+  .btn:hover{background:#232b38;color:var(--fg);border-color:#3a4658}
+  .btn.on{background:rgba(61,220,132,.14);border-color:var(--chg);color:var(--chg)}
+
+  /* ---------- 仪表卡 ---------- */
+  .gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:12px;margin-bottom:16px}
+  .g{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;position:relative;overflow:hidden}
+  .g::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent,var(--fg3))}
+  .g .lb{font-size:11px;color:var(--fg3);text-transform:uppercase;letter-spacing:.8px;margin-bottom:7px;
+    display:flex;align-items:center;gap:6px}
+  .g .num{font-size:27px;font-weight:600;font-family:var(--mono);line-height:1;color:var(--accent,var(--fg));
+    font-variant-numeric:tabular-nums}
+  .g .un{font-size:12px;color:var(--fg3);font-family:var(--mono);margin-left:4px;font-weight:400}
+  .g .ex{font-size:11px;color:var(--fg3);margin-top:8px;font-family:var(--mono);min-height:15px}
+  .spark{height:30px;margin-top:9px;display:block;width:100%}
+
+  /* ---------- 图表 ---------- */
+  .panel{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  .phead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .phead h2{font-size:14px;font-weight:600}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-left:auto}
+  .lg{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--fg2);cursor:pointer;
+    user-select:none;transition:.15s;padding:3px 8px;border-radius:6px;border:1px solid transparent}
+  .lg:hover{background:var(--bg3)}
+  .lg.off{opacity:.34}
+  .lg i{width:11px;height:3px;border-radius:2px;display:block}
+  .chartbox{position:relative;width:100%;height:340px}
+  canvas{width:100%;height:100%;display:block}
+  .tip{position:absolute;pointer-events:none;background:rgba(16,21,29,.96);border:1px solid var(--line);
+    border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:11.5px;line-height:1.65;
+    opacity:0;transition:opacity .12s;white-space:nowrap;z-index:20;box-shadow:0 8px 22px rgba(0,0,0,.5)}
+  .tip b{color:var(--fg);font-weight:600}
+  .tip .r{display:flex;justify-content:space-between;gap:16px}
+  .tip .r span:first-child{color:var(--fg3)}
+
+  /* ---------- 表格 ---------- */
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+  th{text-align:right;padding:8px 12px;color:var(--fg3);font-weight:500;font-size:10.5px;
+    text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg2)}
+  th:first-child,td:first-child{text-align:left}
+  td{text-align:right;padding:6px 12px;border-bottom:1px solid rgba(42,50,64,.45);color:var(--fg2)}
+  tbody tr:hover td{background:rgba(28,34,45,.55);color:var(--fg)}
+  .scroll{max-height:290px;overflow-y:auto}
+  .scroll::-webkit-scrollbar{width:9px}
+  .scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px}
+  .scroll::-webkit-scrollbar-track{background:transparent}
+  .chip{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-family:var(--sans)}
+  .chip.chg{background:rgba(61,220,132,.15);color:var(--chg)}
+  .chip.dis{background:rgba(255,107,91,.15);color:var(--dis)}
+  .chip.idle{background:rgba(107,119,137,.16);color:var(--fg3)}
+  .tbar{height:4px;border-radius:2px;background:var(--bg3);overflow:hidden;min-width:52px;margin-top:4px}
+  .tbar i{display:block;height:100%;background:var(--chg)}
+  footer{text-align:center;color:var(--fg3);font-size:11.5px;margin-top:22px;font-family:var(--mono)}
+  .err{display:none;background:rgba(255,107,91,.12);border:1px solid var(--err);color:var(--err);
+    padding:11px 15px;border-radius:9px;margin-bottom:14px;font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="err" id="err"></div>
+
+  <header>
+    <div class="brand">
+      <div class="logo"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" stroke-linejoin="round"/></svg></div>
+      <div>
+        <h1>BatteryScope</h1>
+        <div class="sub" id="devInfo">正在连接…</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="statpill"><span class="k">连接</span><span class="v"><span class="dot live" id="dot"></span><span id="connTxt">已连接</span></span></div>
+    <div class="statpill"><span class="k">采样</span><span class="v" id="smpRate">—</span></div>
+    <div class="statpill"><span class="k">缓冲</span><span class="v" id="bufCnt">0</span></div>
+    <button class="btn" id="btnPause">暂停</button>
+    <button class="btn" id="btnCsv">导出 CSV</button>
+    <button class="btn" id="btnClear">清空</button>
+  </header>
+
+  <div class="gauges">
+    <div class="g" style="--accent:var(--chg)">
+      <div class="lb"><span class="dot" style="background:var(--chg)"></span>充电功率</div>
+      <div class="num" id="gChg">0.00<span class="un">W</span></div>
+      <div class="ex" id="gChgEx">峰值 0.00 W</div>
+      <canvas class="spark" id="spChg"></canvas>
+    </div>
+    <div class="g" style="--accent:var(--dis)">
+      <div class="lb"><span class="dot" style="background:var(--dis)"></span>放电功率</div>
+      <div class="num" id="gDis">0.00<span class="un">W</span></div>
+      <div class="ex" id="gDisEx">峰值 0.00 W</div>
+      <canvas class="spark" id="spDis"></canvas>
+    </div>
+    <div class="g" style="--accent:var(--volt)">
+      <div class="lb"><span class="dot" style="background:var(--volt)"></span>电池电压</div>
+      <div class="num" id="gVol">0.000<span class="un">V</span></div>
+      <div class="ex" id="gVolEx">区间 0 – 0 V</div>
+      <canvas class="spark" id="spVol"></canvas>
+    </div>
+    <div class="g" style="--accent:var(--amp)">
+      <div class="lb"><span class="dot" style="background:var(--amp)"></span>电池电流</div>
+      <div class="num" id="gAmp">0.000<span class="un">A</span></div>
+      <div class="ex" id="gAmpEx">区间 0 – 0 A</div>
+      <canvas class="spark" id="spAmp"></canvas>
+    </div>
+    <div class="g" style="--accent:var(--net)">
+      <div class="lb"><span class="dot" style="background:var(--net)"></span>电池电量</div>
+      <div class="num" id="gLvl">0<span class="un">%</span></div>
+      <div class="ex" id="gLvlEx">剩余 0 mWh</div>
+      <div class="tbar"><i id="lvlBar" style="width:0%"></i></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="phead">
+      <h2>功率实时曲线</h2>
+      <div class="legend">
+        <div class="lg" data-k="chargeW"><i style="background:var(--chg)"></i>充电 W</div>
+        <div class="lg" data-k="dischargeW"><i style="background:var(--dis)"></i>放电 W</div>
+        <div class="lg" data-k="voltV"><i style="background:var(--volt)"></i>电压 V</div>
+        <div class="lg" data-k="amp"><i style="background:var(--amp)"></i>电流 A</div>
+        <div class="lg" data-k="levelPct"><i style="background:var(--net)"></i>电量 %</div>
+      </div>
+    </div>
+    <div class="chartbox">
+      <canvas id="chart"></canvas>
+      <div class="tip" id="tip"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="phead">
+      <h2>采样明细</h2>
+      <div class="legend"><span class="sub" id="rowCnt">0 行</span></div>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>时间</th><th>充电 (W)</th><th>放电 (W)</th><th>净功率 (W)</th>
+          <th>电压 (V)</th><th>电流 (A)</th><th>电量 (%)</th><th>温度 (°C)</th><th>状态</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer>数据源 root\WMI\BatteryStatus · 本地采集 · 不上传任何数据</footer>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const MAX = 3600;
+  let buf = [], paused = false, ws = null, retry = 0;
+  const hidden = {chargeW:false, dischargeW:false, voltV:false, amp:false, levelPct:false};
+  const COLORS = {chargeW:'#3ddc84', dischargeW:'#ff6b5b', voltV:'#ffb020', amp:'#b47cff', levelPct:'#4da3ff'};
+  const LABEL = {chargeW:'充电', dischargeW:'放电', voltV:'电压', amp:'电流', levelPct:'电量'};
+  let mouse = {x:-1, y:-1, on:false};
+  let rateTimes = [], pausedBuf = [];
+
+  // ---------------- WebSocket ----------------
+  function connect(){
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => { setConn(true); retry = 0; };
+    ws.onclose = () => { setConn(false); retry++; setTimeout(connect, Math.min(1000*retry, 6000)); };
+    ws.onerror = () => ws.close();
+    ws.onmessage = e => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'history'){ buf = msg.data.slice(-MAX); render(); }
+      else if (msg.type === 'sample'){ push(msg.data); }
+    };
+  }
+  function setConn(ok){
+    $('dot').className = 'dot ' + (ok?'live':'dead');
+    $('connTxt').textContent = ok ? '已连接' : '已断开';
+    if(!ok) showErr('与采集器连接断开，正在重试…');
+    else hideErr();
+  }
+  function showErr(m){ const e=$('err'); e.textContent=m; e.style.display='block'; }
+  function hideErr(){ $('err').style.display='none'; }
+
+  function push(s){
+    rateTimes.push(Date.now());
+    if (rateTimes.length > 60) rateTimes.shift();
+    if (paused){ pausedBuf.push(s); return; }
+    buf.push(s);
+    if (buf.length > MAX) buf.shift();
+    render();
+  }
+
+  // ---------------- 渲染 ----------------
+  function render(){
+    if (!buf.length) return;
+    const L = buf[buf.length-1];
+
+    // 顶部设备信息
+    if (!render._dev){
+      fetch('/api/snapshot').then(r=>r.json()).then(d=>{
+        render._dev = 1;
+        if (d.latest) $('devInfo').textContent =
+          `采样 ${d.interval}s · 缓冲 ${d.history||MAX} · 运行 ${Math.round(d.uptime)}s`;
+      }).catch(()=>{});
+    }
+    $('smpRate').textContent = rateTimes.length > 2
+      ? (rateTimes.length-1)+'/s' : '—';
+    $('bufCnt').textContent = buf.length;
+
+    // 仪表
+    const chg = L.chargeW||0, dis = L.dischargeW||0;
+    $('gChg').innerHTML = chg.toFixed(2)+'<span class="un">W</span>';
+    $('gDis').innerHTML = dis.toFixed(2)+'<span class="un">W</span>';
+    $('gVol').innerHTML = (L.voltV||0).toFixed(3)+'<span class="un">V</span>';
+    $('gAmp').innerHTML = (L.amp||0).toFixed(3)+'<span class="un">A</span>';
+    $('gLvl').innerHTML = (L.levelPct ?? 0)+'<span class="un">%</span>';
+    $('lvlBar').style.width = (L.levelPct||0)+'%';
+
+    // 统计
+    const st = computeStats();
+    $('gChgEx').textContent = `峰值 ${st.charge.max.toFixed(2)} W · 均 ${st.charge.avg.toFixed(2)} W`;
+    $('gDisEx').textContent = `峰值 ${st.discharge.max.toFixed(2)} W · 均 ${st.discharge.avg.toFixed(2)} W`;
+    $('gVolEx').textContent = `区间 ${st.voltage.min.toFixed(3)} – ${st.voltage.max.toFixed(3)} V`;
+    $('gAmpEx').textContent = `区间 ${st.amp.min.toFixed(3)} – ${st.amp.max.toFixed(3)} A`;
+    $('gLvlEx').textContent = `剩余 ${L.remaining ?? '—'} mWh` + (L.cycle!=null?` · 循环 ${L.cycle} 次`:'')
+      + (L.tempC!=null?` · ${L.tempC}°C`:'');
+
+    drawChart();
+    drawSparks(st);
+    renderTable();
+  }
+
+  function computeStats(){
+    const g = k => {
+      const a = buf.map(s=>s[k]).filter(v=>typeof v === 'number');
+      if (!a.length) return {min:0,max:0,avg:0};
+      return {min:Math.min(...a), max:Math.max(...a), avg:a.reduce((x,y)=>x+y,0)/a.length};
+    };
+    return {charge:g('chargeW'), discharge:g('dischargeW'), voltage:g('voltV'), amp:g('amp')};
+  }
+
+  // ---------------- 主图表 ----------------
+  const cvs = $('chart'), ctx = cvs.getContext('2d');
+  const tip = $('tip');
+
+  function setupCanvas(c){
+    const dpr = window.devicePixelRatio || 1;
+    const r = c.getBoundingClientRect();
+    c.width = Math.max(1, Math.floor(r.width*dpr));
+    c.height = Math.max(1, Math.floor(r.height*dpr));
+    const g = c.getContext('2d');
+    g.setTransform(dpr,0,0,dpr,0,0);
+    return {w:r.width, h:r.height, g};
+  }
+
+  function drawChart(){
+    const {w,h,g} = setupCanvas(cvs);
+    g.clearRect(0,0,w,h);
+    if (buf.length < 2) return;
+
+    const padL=54, padR=16, padT=14, padB=28;
+    const cw = w-padL-padR, ch = h-padT-padB;
+
+    // 可见系列与各自量纲
+    const series = [];
+    if (!hidden.chargeW)     series.push({k:'chargeW', c:COLORS.chargeW, u:'W'});
+    if (!hidden.dischargeW)  series.push({k:'dischargeW', c:COLORS.dischargeW, u:'W'});
+    if (!hidden.voltV)       series.push({k:'voltV', c:COLORS.voltV, u:'V'});
+    if (!hidden.amp)         series.push({k:'amp', c:COLORS.amp, u:'A'});
+    if (!hidden.levelPct)    series.push({k:'levelPct', c:COLORS.levelPct, u:'%'});
+
+    // Y 轴范围（功率类共用左侧，电压/电流用各自比例归一化到同一画布）
+    let maxV = 0;
+    series.forEach(s=>{
+      buf.forEach(d=>{ if (typeof d[s.k]==='number' && d[s.k]>maxV) maxV=d[s.k]; });
+    });
+    if (maxV <= 0) maxV = 10;
+    maxV = niceCeil(maxV);
+
+    const n = buf.length;
+    const xAt = i => padL + (n===1?cw/2 : (i/(n-1))*cw);
+    const yAt = v => padT + ch - (v/maxV)*ch;
+
+    // 网格
+    g.strokeStyle='rgba(42,50,64,.55)'; g.lineWidth=1;
+    g.font='10px var(--mono), Consolas, monospace'; g.fillStyle='#6b7789'; g.textAlign='right';
+    const steps=5;
+    for(let i=0;i<=steps;i++){
+      const v = maxV*i/steps, y = yAt(v);
+      g.beginPath(); g.moveTo(padL,y); g.lineTo(w-padR,y); g.stroke();
+      g.fillText(v.toFixed(v<10?1:0), padL-8, y+3);
+    }
+    g.textAlign='center';
+    for(let i=0;i<=6;i++){
+      const x = padL + (cw*i/6);
+      g.strokeStyle='rgba(42,50,64,.3)';
+      g.beginPath(); g.moveTo(x,padT); g.lineTo(x,padT+ch); g.stroke();
+    }
+
+    // X 轴时间
+    g.textAlign='center'; g.fillStyle='#6b7789';
+    const tickN = Math.min(6, n);
+    for(let i=0;i<tickN;i++){
+      const idx = Math.round((n-1)*i/(tickN-1||1));
+      g.fillText(buf[idx].t||'', xAt(idx), h-9);
+    }
+
+    // 轴线
+    g.strokeStyle='#3a4658'; g.lineWidth=1;
+    g.beginPath(); g.moveTo(padL,padT); g.lineTo(padL,padT+ch); g.lineTo(w-padR,padT+ch); g.stroke();
+
+    if (!series.length){
+      g.fillStyle='#6b7789'; g.textAlign='center'; g.font='12px var(--sans)';
+      g.fillText('所有曲线已隐藏，请在右上角勾选要显示的序列', w/2, h/2);
+      return;
+    }
+
+    // 曲线 + 面积
+    series.forEach(s=>{
+      const pts = [];
+      for(let i=0;i<n;i++){
+        const v = buf[i][s.k];
+        if (typeof v !== 'number') continue;
+        pts.push([xAt(i), yAt(Math.min(v,maxV)), v]);
+      }
+      if (pts.length<2) return;
+
+      // 面积
+      const grad = g.createLinearGradient(0,padT,0,padT+ch);
+      grad.addColorStop(0, s.c+'2e');
+      grad.addColorStop(1, s.c+'00');
+      g.beginPath(); g.moveTo(pts[0][0], yAt(0));
+      pts.forEach(p=>g.lineTo(p[0],p[1]));
+      g.lineTo(pts[pts.length-1][0], yAt(0)); g.closePath();
+      g.fillStyle=grad; g.fill();
+
+      // 线
+      g.beginPath();
+      pts.forEach((p,i)=> i? g.lineTo(p[0],p[1]) : g.moveTo(p[0],p[1]));
+      g.strokeStyle=s.c; g.lineWidth=1.7; g.lineJoin='round'; g.lineCap='round';
+      g.stroke();
+
+      // 末端点
+      const last = pts[pts.length-1];
+      g.beginPath(); g.arc(last[0],last[1],3,0,7);
+      g.fillStyle=s.c; g.fill();
+      g.beginPath(); g.arc(last[0],last[1],6,0,7);
+      g.strokeStyle=s.c+'55'; g.lineWidth=1.4; g.stroke();
+    });
+
+    // 悬停十字线 + 提示
+    if (mouse.on && mouse.x>padL && mouse.x<w-padR){
+      const idx = Math.round((mouse.x-padL)/cw*(n-1));
+      const clamped = Math.max(0, Math.min(n-1, idx));
+      const x = xAt(clamped);
+      g.strokeStyle='rgba(154,167,184,.45)'; g.lineWidth=1; g.setLineDash([3,3]);
+      g.beginPath(); g.moveTo(x,padT); g.lineTo(x,padT+ch); g.stroke(); g.setLineDash([]);
+
+      const d = buf[clamped];
+      series.forEach(s=>{
+        const v = d[s.k];
+        if (typeof v !== 'number') return;
+        const y = yAt(Math.min(v,maxV));
+        g.beginPath(); g.arc(x,y,3.6,0,7);
+        g.fillStyle=s.c; g.fill();
+        g.strokeStyle='#0d1017'; g.lineWidth=1.6; g.stroke();
+      });
+
+      const rows = series.map(s=>{
+        const v=d[s.k];
+        return `<div class="r"><span>${LABEL[s.k]} (${s.u})</span><b style="color:${s.c}">${typeof v==='number'?v.toFixed(2):'—'}</b></div>`;
+      }).join('');
+      tip.innerHTML = `<b>${d.t||''}</b>${rows}`;
+      tip.style.opacity='1';
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      let tx = x+14; if (tx+tw>w) tx = x-tw-14;
+      tip.style.left = tx+'px';
+      tip.style.top = Math.max(4, Math.min(padT+ch-th, mouse.y-th/2))+'px';
+    } else {
+      tip.style.opacity='0';
+    }
+  }
+
+  // ---------------- 迷你曲线 ----------------
+  function drawSparks(st){
+    spark('spChg','chargeW',COLORS.chargeW);
+    spark('spDis','dischargeW',COLORS.dischargeW);
+    spark('spVol','voltV',COLORS.voltV);
+    spark('spAmp','amp',COLORS.amp);
+  }
+  function spark(id, key, color){
+    const c = $(id); if(!c) return;
+    const {w,h,g} = setupCanvas(c);
+    g.clearRect(0,0,w,h);
+    const n = buf.length; if(n<2) return;
+    const vals = buf.map(s=>s[key]).filter(v=>typeof v==='number');
+    if(vals.length<2) return;
+    const mn=Math.min(...vals), mx=Math.max(...vals), rg=(mx-mn)||1;
+    g.beginPath();
+    for(let i=0;i<n;i++){
+      const v=buf[i][key]; if(typeof v!=='number') continue;
+      const x=(i/(n-1))*w, y=h-2-((v-mn)/rg)*(h-5);
+      i===0?g.moveTo(x,y):g.lineTo(x,y);
+    }
+    g.strokeStyle=color; g.lineWidth=1.4; g.lineJoin='round'; g.stroke();
+  }
+
+  // ---------------- 表格 ----------------
+  function renderTable(){
+    const rows = buf.slice(-80).reverse();
+    $('rowCnt').textContent = buf.length+' 行（显示最近 80）';
+    $('tbody').innerHTML = rows.map(d=>{
+      const st = d.charging ? '<span class="chip chg">充电</span>'
+                 : (d.dischargeW>0.5 ? '<span class="chip dis">放电</span>' : '<span class="chip idle">待机</span>');
+      return `<tr>
+        <td>${d.t||''}</td>
+        <td style="color:var(--chg)">${(d.chargeW||0).toFixed(2)}</td>
+        <td style="color:var(--dis)">${(d.dischargeW||0).toFixed(2)}</td>
+        <td>${(d.netW||0).toFixed(2)}</td>
+        <td>${(d.voltV||0).toFixed(3)}</td>
+        <td>${(d.amp||0).toFixed(3)}</td>
+        <td>${d.levelPct ?? '—'}</td>
+        <td>${d.tempC ?? '—'}</td>
+        <td>${st}</td></tr>`;
+    }).join('');
+  }
+
+  function niceCeil(v){
+    const e = Math.pow(10, Math.floor(Math.log10(v)));
+    const f = v/e;
+    return (f<=1?1:f<=2?2:f<=5?5:10)*e;
+  }
+
+  // ---------------- 交互 ----------------
+  document.querySelectorAll('.lg').forEach(el=>{
+    el.onclick = ()=>{
+      const k = el.dataset.k;
+      hidden[k] = !hidden[k];
+      el.classList.toggle('off', hidden[k]);
+      drawChart();
+    };
+  });
+  cvs.addEventListener('mousemove', e=>{
+    const r = cvs.getBoundingClientRect();
+    mouse.x = e.clientX-r.left; mouse.y = e.clientY-r.top; mouse.on = true;
+    drawChart();
+  });
+  cvs.addEventListener('mouseleave', ()=>{ mouse.on=false; drawChart(); });
+  window.addEventListener('resize', ()=>{ drawChart(); drawSparks(computeStats()); });
+
+  $('btnPause').onclick = e=>{
+    paused = !paused;
+    e.target.textContent = paused ? '继续' : '暂停';
+    e.target.classList.toggle('on', paused);
+    if(!paused && pausedBuf.length){
+      pausedBuf.forEach(s=>{ buf.push(s); if(buf.length>MAX) buf.shift(); });
+      pausedBuf = []; render();
+    }
+  };
+  $('btnClear').onclick = ()=>{ buf=[]; renderTable(); drawChart(); };
+  $('btnCsv').onclick = ()=>{ location.href='/api/export.csv'; };
+
+  connect();
+  setInterval(()=>{ if(!paused) render(); }, 1000);
+})();
+</script>
+</body>
+</html>

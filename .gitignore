@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 运行时产物
+*.log
+*.csv
+!examples/*.csv
+battery_report.html
+
+# 凭据（绝不要提交）
+.env
+*.pem
+*.key
+id_rsa
+id_ed25519
