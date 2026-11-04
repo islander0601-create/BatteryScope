@@ -148,6 +148,11 @@
       <div class="ex" id="gLvlEx">剩余 0 mWh</div>
       <div class="tbar"><i id="lvlBar" style="width:0%"></i></div>
     </div>
+    <div class="g" style="--accent:var(--fg3)">
+      <div class="lb"><span class="dot" style="background:var(--fg3)"></span>本次充电会话</div>
+      <div class="num" id="gSess">—<span class="un" id="gSessUnit"></span></div>
+      <div class="ex" id="gSessEx">未在充电</div>
+    </div>
   </div>
 
   <div class="panel">
@@ -237,8 +242,9 @@
     if (!render._dev){
       fetch('/api/snapshot').then(r=>r.json()).then(d=>{
         render._dev = 1;
+        // 注意：d.history 是样本数组，必须取 length，否则插值会变成 [object Object]
         if (d.latest) $('devInfo').textContent =
-          `采样 ${d.interval}s · 缓冲 ${d.history||MAX} · 运行 ${Math.round(d.uptime)}s`;
+          `采样 ${d.interval}s · 缓冲 ${(d.history||[]).length || MAX} · 运行 ${Math.round(d.uptime)}s`;
       }).catch(()=>{});
     }
     $('smpRate').textContent = rateTimes.length > 2
@@ -256,12 +262,55 @@
 
     // 统计
     const st = computeStats();
-    $('gChgEx').textContent = `峰值 ${st.charge.max.toFixed(2)} W · 均 ${st.charge.avg.toFixed(2)} W`;
-    $('gDisEx').textContent = `峰值 ${st.discharge.max.toFixed(2)} W · 均 ${st.discharge.avg.toFixed(2)} W`;
+    const sess = chargeSession();
+    const rt = runtimeEstimate();
+
+    // 充电功率卡：以「本次插上插头」为起点算平均，而不是全程平均
+    if (sess){
+      $('gChgEx').textContent =
+        `本次均值 ${sess.avg.toFixed(2)} W · 峰值 ${sess.max.toFixed(2)} W`;
+      $('gChgEx').title = `充电会话始于 ${sess.startT}`;
+    } else {
+      $('gChgEx').textContent = st.charge.max>0
+        ? `全程峰值 ${st.charge.max.toFixed(2)} W`
+        : '未在充电';
+      $('gChgEx').title = '';
+    }
+
+    // 放电功率卡：插电时转为显示本次充电会话信息
+    if (sess){
+      $('gDisEx').textContent = `已充 ${sess.wh.toFixed(1)} Wh · 时长 ${fmtDur(sess.durS/3600)}`;
+    } else {
+      $('gDisEx').textContent = `峰值 ${st.discharge.max.toFixed(2)} W · 均 ${st.discharge.avg.toFixed(2)} W`;
+    }
+
     $('gVolEx').textContent = `区间 ${st.voltage.min.toFixed(3)} – ${st.voltage.max.toFixed(3)} V`;
     $('gAmpEx').textContent = `区间 ${st.amp.min.toFixed(3)} – ${st.amp.max.toFixed(3)} A`;
-    $('gLvlEx').textContent = `剩余 ${L.remaining ?? '—'} mWh` + (L.cycle!=null?` · 循环 ${L.cycle} 次`:'')
-      + (L.tempC!=null?` · ${L.tempC}°C`:'');
+
+    // 电量卡：剩余容量 + 按放电功率预估的可用时间
+    const extras = [];
+    if (L.remaining != null) extras.push(`剩余 ${L.remaining} mWh`);
+    if (L.cycle != null) extras.push(`循环 ${L.cycle} 次`);
+    if (L.tempC != null) extras.push(`${L.tempC}°C`);
+    $('gLvlEx').textContent = extras.join(' · ');
+
+    if (rt){
+      $('gLvlEx').textContent += ` · 约可用 ${fmtDur(rt.hours)}`;
+      $('gLvlEx').title = `按近期平均放电 ${rt.avgDis.toFixed(2)} W 估算`;
+    } else if (L.acState===2 || L.acState===6 || L.acState===7){
+      $('gLvlEx').textContent += ' · 已接电源';
+      $('gLvlEx').title = '';
+    }
+
+    // 本次充电会话卡
+    if (sess){
+      $('gSess').innerHTML = sess.avg.toFixed(2)+'<span class="un">W 平均</span>';
+      $('gSessEx').textContent =
+        `${sess.startT} 起 · 时长 ${fmtDur(sess.durS/3600)} · 累计 ${sess.wh.toFixed(1)} Wh`;
+    } else {
+      $('gSess').innerHTML = '—';
+      $('gSessEx').textContent = '未在充电';
+    }
 
     drawChart();
     drawSparks(st);
@@ -275,6 +324,64 @@
       return {min:Math.min(...a), max:Math.max(...a), avg:a.reduce((x,y)=>x+y,0)/a.length};
     };
     return {charge:g('chargeW'), discharge:g('dischargeW'), voltage:g('voltV'), amp:g('amp')};
+  }
+
+  // ---------- 充电会话 ----------
+  // 从「最后一次插上插头」（充电状态由 false→true）开始的那一段，
+  // 用来算本次充电的平均功率；断开后该会话结束。
+  function chargeSession(){
+    if (!buf.length) return null;
+    const last = buf[buf.length-1];
+    if (!last.charging) return null;          // 当前未在充电
+
+    // 从尾部往前找最后一次 charging 状态翻转点
+    let start = 0;
+    for (let i = buf.length-1; i > 0; i--){
+      if (!buf[i-1].charging && buf[i].charging){ start = i; break; }
+      if (buf[i-1].charging) start = i-1;      // 持续充电中，延伸起点
+    }
+    const seg = buf.slice(start);
+    const chg = seg.map(s=>s.chargeW).filter(v=>typeof v==='number' && v>0);
+    if (!chg.length) return null;
+
+    const sum = chg.reduce((x,y)=>x+y, 0);
+    const durS = (seg[seg.length-1].ts - seg[0].ts) / 1000;
+
+    return {
+      startT: seg[0].t,
+      durS,
+      avg: sum/chg.length,
+      max: Math.max(...chg),
+      peakAvg: sum,                              // 用于累计算总能量
+      // 本次充电累计送入电量（mWh）：功率(W) × 时长(h)
+      wh: (sum * (durS/3600)),
+      n: chg.length,
+    };
+  }
+
+  // ---------- 续航预估 ----------
+  // 用近期平均放电功率 + 剩余容量估算可用时间
+  function runtimeEstimate(){
+    const L = buf[buf.length-1];
+    if (!L || L.remaining==null || L.remaining<=0) return null;
+    if (L.acState===2 || L.acState===6 || L.acState===7) return null;  // 插电时不估
+
+    // 取最近 30 秒的样本求平均放电功率，避免单点抖动
+    const win = buf.slice(-60);
+    const ds = win.map(s=>s.dischargeW).filter(v=>typeof v==='number' && v>0.5);
+    if (!ds.length) return null;
+    const avgDis = ds.reduce((x,y)=>x+y,0)/ds.length;
+
+    const hours = L.remaining / avgDis;        // mWh / mW = h
+    return {hours, avgDis, remaining: L.remaining};
+  }
+
+  function fmtDur(h){
+    if (!isFinite(h) || h<=0) return '—';
+    const m = Math.round(h*60);
+    const hh = Math.floor(m/60), mm = m%60;
+    if (hh>0) return `${hh} 小时 ${mm} 分`;
+    return `${mm} 分钟`;
   }
 
   // ---------------- 主图表 ----------------
